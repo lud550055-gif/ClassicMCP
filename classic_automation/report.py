@@ -45,6 +45,32 @@ def _fmt_cell(val: float) -> str:
     return f'{val:.4g}'.rjust(_COL_W)
 
 
+def _make_table_row(num: float, den: float, deg: int, first: bool = False) -> str:
+    """Формирует строку ASCII-таблицы CLASSiC с заданными значениями."""
+    col1 = '| Ном.Система  |' if first else '|              |'
+    return f"{col1}{_fmt_cell(num)} |{_fmt_cell(den)} |   {deg}   |"
+
+
+def _rewrite_table_rows(rows: list, classic: dict):
+    """
+    Перезаписывает уже заполненные строки ASCII-таблицы (без «…»).
+    Используется для WP-таблицы с образцовыми значениями другого варианта.
+    """
+    num = classic.get('num', [0.0])
+    den = classic.get('den', [0.0])
+    max_deg = max(len(num), len(den)) - 1
+
+    def get(lst, i):
+        return lst[i] if i < len(lst) else 0.0
+
+    for row_i, para in enumerate(rows):
+        if not para.runs:
+            continue
+        first = row_i == 0
+        new_text = _make_table_row(get(num, row_i), get(den, row_i), row_i, first)
+        para.runs[0].text = new_text
+
+
 def _fill_table_rows(paras: list, classic: dict):
     """
     Заполняет строки ASCII-таблицы CLASSiC коэффициентами ПФ.
@@ -151,10 +177,38 @@ def fill_report(
     def _rhs(formula: str) -> str:
         return formula.split(' = ', 1)[-1] if ' = ' in formula else formula
 
-    phi_rhs  = _rhs(calc.Phi_str)    # "100 / (s**3 + ...)"
-    phie_rhs = _rhs(calc.PhiE_str)   # "(s**3 + ...) / (s**3 + ...)"
+    wp_rhs   = _rhs(calc.WP_str)
+    phi_rhs  = _rhs(calc.Phi_str)
+    phie_rhs = _rhs(calc.PhiE_str)
 
-    # 2. ── Текстовые замены ────────────────────────────────────────────────
+    # 2. ── WP-формула и WP-таблица ────────────────────────────────────────
+    # Строка вида "WP(s)= 0.1/(...)" — образец другого варианта; заменяем
+    for p in paras:
+        txt = p.text
+        if txt.startswith('WP(s)=') and ELLIPSIS not in txt and len(txt) > 7:
+            # Находим run с '= ' и перезаписываем с этой позиции
+            for i, run in enumerate(p.runs):
+                if '= ' in run.text or run.text == '=':
+                    run.text = f'= {wp_rhs}'
+                    for r2 in p.runs[i + 1:]:
+                        r2.text = ''
+                    break
+            break  # только первое совпадение
+
+    # Строки WP-таблицы: заканчиваются на |   N   | (колонка степени),
+    # без «…», до первой Phi-строки с «…»
+    import re as _re
+    wp_rows: list = []
+    for p in paras:
+        if p.text.startswith('|') and ELLIPSIS in p.text:
+            break  # дошли до Phi-таблицы
+        if ELLIPSIS not in p.text and _re.search(r'\|   \d+   \|$', p.text):
+            wp_rows.append(p)
+
+    # Перезаписываем WP-строки значениями WP_classic
+    _rewrite_table_rows(wp_rows, calc.WP_classic)
+
+    # 3. ── Текстовые замены ────────────────────────────────────────────────
     phie_count = 0
 
     for p in paras:
@@ -185,6 +239,16 @@ def fill_report(
         elif txt.startswith('Kкр=') and ELLIPSIS in txt:
             _replace_ellipsis(p, [str(round(calc.K_loop_critical, 4))])
 
+        # Имя MDL-файла: 'Модель сохранена в файле … .mdl.'
+        # run с «…» идёт перед run ' .mdl.' — убираем пробел после замены
+        elif 'Модель сохранена в файле' in txt and ELLIPSIS in txt:
+            for j, run in enumerate(p.runs):
+                if ELLIPSIS in run.text:
+                    run.text = run.text.replace(ELLIPSIS, f'var{variant_str}')
+                    if j + 1 < len(p.runs):
+                        p.runs[j + 1].text = p.runs[j + 1].text.lstrip()
+                    break
+
     # 3. ── Таблицы коэффициентов ПФ ───────────────────────────────────────
     # Находим тройки строк таблицы по шаблону (строка начинается с '|' и содержит …)
     table_groups: list[list] = []
@@ -204,7 +268,30 @@ def fill_report(
     if len(table_groups) >= 2:
         _fill_table_rows(table_groups[1], calc.PhiE_classic)
 
-    # 4. ── Скриншоты ──────────────────────────────────────────────────────
+    # 4. ── Тестовые вопросы (выделение правильного ответа жирным) ────────
+    # Q10: устойчивость по Гурвицу — варианты на отдельных строках
+    stability_answers = {
+        True:   '1:  система устойчива,',
+        False:  None,   # определяем ниже
+    }
+    # Если неустойчива — проверяем чем именно
+    if not calc.hurwitz_stable:
+        coeffs = calc.char_coeffs
+        if all(c > 0 for c in coeffs):
+            # Все коэффициенты > 0, но определитель ≤ 0 → граница устойчивости
+            q10_answer = '2:  система нейтральна (находится на нейтральной границе устойчивости),'
+        else:
+            q10_answer = '4:  система неустойчива.'
+    else:
+        q10_answer = '1:  система устойчива,'
+
+    for p in paras:
+        if p.text.strip() == q10_answer.strip():
+            for run in p.runs:
+                run.bold = True
+            break
+
+    # 5. ── Скриншоты ──────────────────────────────────────────────────────
     # Находим параграфы с подписями к рисункам
     ris3 = ris5 = ris6 = None
     for p in paras:
