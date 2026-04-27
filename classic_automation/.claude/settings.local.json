@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import mcp; print\\('mcp OK:', mcp.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(python *)",
+      "Bash(dir *)",
+      "Bash(reg query *)"
+    ]
+  }
+}

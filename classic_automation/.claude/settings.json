@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "classic-automation": {
+      "command": "python",
+      "args": ["C:/Users/lud50/Desktop/TU/classic_automation/server.py"],
+      "env": {}
+    }
+  }
+}
