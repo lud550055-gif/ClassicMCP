@@ -1,98 +1,123 @@
-# ============================================================
-#  report.py — заполняет шаблон .docx результатами
-# ============================================================
-"""
-Принимает путь к шаблону LP_vXX.doc, результаты расчётов
-и скриншоты, и создаёт заполненный отчёт в output_dir.
-"""
-import os
-import re
-import subprocess
+# report.py — заполняет задание LP_vXX.doc результатами и скриншотами
 import shutil
 from pathlib import Path
-from PIL import Image
+
+from docx import Document
+from docx.shared import Inches
 
 from calculator import CalcResults
 from classic_gui import Screenshots
 
-
-def _convert_to_docx(doc_path: str, work_dir: str) -> str:
-    """Конвертирует .doc → .docx если нужно."""
-    src = Path(doc_path)
-    if src.suffix.lower() == ".docx":
-        dst = Path(work_dir) / src.name
-        shutil.copy(src, dst)
-        return str(dst)
-
-    dst = Path(work_dir) / (src.stem + ".docx")
-    # Используем LibreOffice
-    cmd = ["soffice", "--headless", "--convert-to", "docx",
-           str(src), "--outdir", work_dir]
-    subprocess.run(cmd, capture_output=True, timeout=30)
-    if dst.exists():
-        return str(dst)
-    raise FileNotFoundError(f"Не удалось конвертировать {doc_path}")
+ELLIPSIS = '…'  # …
+_COL_W = 10          # ширина колонки таблицы (9 пробелов + символ)
+_DEG_W = 7           # ширина колонки степени (3 + digit + 3)
 
 
-def _unpack(docx_path: str, out_dir: str):
-    """Распаковывает .docx."""
-    import zipfile
-    with zipfile.ZipFile(docx_path, 'r') as z:
-        z.extractall(out_dir)
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _convert_doc_to_docx(doc_path: str, out_path: str) -> str:
+    """Конвертирует .doc → .docx через Word COM."""
+    import win32com.client
+    word = win32com.client.Dispatch("Word.Application")
+    word.Visible = False
+    try:
+        doc = word.Documents.Open(str(Path(doc_path).resolve()))
+        doc.SaveAs2(str(Path(out_path).resolve()), FileFormat=16)
+        doc.Close(False)
+    finally:
+        word.Quit()
+    return out_path
 
 
-def _pack(unpacked_dir: str, output_docx: str):
-    """Упаковывает директорию обратно в .docx."""
-    import zipfile
-    with zipfile.ZipFile(output_docx, 'w', zipfile.ZIP_DEFLATED) as z:
-        for root, _, files in os.walk(unpacked_dir):
-            for file in files:
-                fp = os.path.join(root, file)
-                arcname = os.path.relpath(fp, unpacked_dir)
-                z.write(fp, arcname)
+def _replace_ellipsis(para, replacements: list[str]):
+    """Заменяет … в прогоне параграфа значениями из списка по порядку."""
+    i = 0
+    for run in para.runs:
+        while ELLIPSIS in run.text and i < len(replacements):
+            run.text = run.text.replace(ELLIPSIS, replacements[i], 1)
+            i += 1
 
 
-def _img_emu(img_path: str, max_width_cm: float = 15.0):
-    """Возвращает (cx, cy) в EMU для вставки изображения."""
-    EMU_PER_CM = 360000
-    MAX_W = int(max_width_cm * EMU_PER_CM)
-    img = Image.open(img_path)
-    w, h = img.size
-    # Масштаб по 96 dpi
-    emu_w = int(w * 914400 / 96)
-    emu_h = int(h * 914400 / 96)
-    if emu_w > MAX_W:
-        scale = MAX_W / emu_w
-        emu_w = MAX_W
-        emu_h = int(emu_h * scale)
-    return emu_w, emu_h
+def _fmt_cell(val: float) -> str:
+    """Значение для 10-символьной колонки таблицы (правое выравнивание)."""
+    if val == 0.0:
+        return ' ' * _COL_W
+    return f'{val:.4g}'.rjust(_COL_W)
 
 
-def _make_inline_img_xml(r_id: str, img_path: str, pic_id: int, name: str) -> str:
-    """Генерирует XML для вставки inline-изображения."""
-    cx, cy = _img_emu(img_path)
-    return (
-        f'<w:r><w:drawing>'
-        f'<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
-        f' distT="0" distB="0" distL="0" distR="0">'
-        f'<wp:extent cx="{cx}" cy="{cy}"/>'
-        f'<wp:effectExtent l="0" t="0" r="0" b="0"/>'
-        f'<wp:docPr id="{pic_id}" name="{name}"/>'
-        f'<wp:cNvGraphicFramePr>'
-        f'<a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>'
-        f'</wp:cNvGraphicFramePr>'
-        f'<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
-        f'<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-        f'<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-        f'<pic:nvPicPr><pic:cNvPr id="{pic_id}" name="{name}"/>'
-        f'<pic:cNvPicPr><a:picLocks noChangeAspect="1"/></pic:cNvPicPr></pic:nvPicPr>'
-        f'<pic:blipFill><a:blip r:embed="{r_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
-        f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
-        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
-        f'</pic:pic></a:graphicData></a:graphic>'
-        f'</wp:inline></w:drawing></w:r>'
-    )
+def _fill_table_rows(paras: list, classic: dict):
+    """
+    Заполняет строки ASCII-таблицы CLASSiC коэффициентами ПФ.
+    classic: {"num": [c0,c1,...], "den": [c0,c1,...]} от s^0.
+    Если степень > 2, вставляет дополнительные строки перед последней.
+    """
+    import copy
 
+    num = classic.get('num', [0.0])
+    den = classic.get('den', [0.0])
+
+    def get(lst, i):
+        return lst[i] if i < len(lst) else 0.0
+
+    max_deg = max(len(num), len(den)) - 1
+
+    def _write_row(run, deg, is_last=False):
+        text = run.text
+        n_val = _fmt_cell(get(num, deg))
+        d_val = _fmt_cell(get(den, deg))
+        text = text.replace(' ' * 9 + ELLIPSIS, n_val, 1)
+        text = text.replace(' ' * 9 + ELLIPSIS, d_val, 1)
+        if is_last:
+            text = text.replace(f'   {ELLIPSIS}   ', f'   {deg}   ', 1)
+        run.text = text
+
+    # Строки 0 и 1 (фиксированные степени)
+    if len(paras) > 0 and paras[0].runs:
+        _write_row(paras[0].runs[0], 0)
+    if len(paras) > 1 and paras[1].runs:
+        _write_row(paras[1].runs[0], 1)
+
+    # Для степеней 2..max_deg-1 вставляем дополнительные строки перед шаблонной
+    last_para = paras[2] if len(paras) > 2 else None
+    if last_para:
+        for deg in range(2, max_deg):
+            new_elem = copy.deepcopy(last_para._element)
+            last_para._element.addprevious(new_elem)
+            # Найдём <w:t> внутри скопированного элемента и перезапишем
+            ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+            for wt in new_elem.findall(f'.//{{{ns}}}t'):
+                text = wt.text or ''
+                n_val = _fmt_cell(get(num, deg))
+                d_val = _fmt_cell(get(den, deg))
+                text = text.replace(' ' * 9 + ELLIPSIS, n_val, 1)
+                text = text.replace(' ' * 9 + ELLIPSIS, d_val, 1)
+                text = text.replace(f'   {ELLIPSIS}   ', f'   {deg}   ', 1)
+                wt.text = text
+
+        # Заполняем последнюю (шаблонную) строку — максимальная степень
+        if last_para.runs:
+            _write_row(last_para.runs[0], max_deg, is_last=True)
+
+
+def _insert_image_in_para(para, img_path: str, width_in: float = 5.5):
+    """Добавляет изображение в существующий (пустой) параграф."""
+    if not img_path or not Path(img_path).exists():
+        return
+    run = para.add_run()
+    run.add_picture(img_path, width=Inches(width_in))
+
+
+def _insert_image_before(doc, target_para, img_path: str, width_in: float = 5.5):
+    """Вставляет новый параграф с изображением перед target_para."""
+    if not img_path or not Path(img_path).exists():
+        return
+    tmp = doc.add_paragraph()
+    tmp.alignment = 1  # CENTER
+    tmp.add_run().add_picture(img_path, width=Inches(width_in))
+    target_para._element.addprevious(tmp._element)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def fill_report(
     template_path: str,
@@ -101,134 +126,110 @@ def fill_report(
     shots:         Screenshots,
 ) -> str:
     """
-    Главная функция.
-    Возвращает путь к готовому отчёту.
+    Заполняет задание LP_vXX результатами расчётов и скриншотами.
+    Возвращает путь к готовому .docx файлу.
     """
-    import tempfile
-    work = tempfile.mkdtemp(prefix=f"report_v{calc.variant}_")
-    variant_str = f"{calc.variant:02d}"
+    src = Path(template_path)
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    variant_str = f'{calc.variant:02d}'
+    out_path = out_dir / f'LP_v{variant_str}_done.docx'
 
-    # 1. Конвертируем шаблон
-    docx_path = _convert_to_docx(template_path, work)
+    # 1. .doc → .docx если нужно
+    if src.suffix.lower() == '.doc':
+        docx_src = src.with_suffix('.docx')
+        if not docx_src.exists():
+            print('[report] Конвертация .doc → .docx...')
+            _convert_doc_to_docx(str(src), str(docx_src))
+        src = docx_src
 
-    # 2. Распаковываем
-    unpacked = os.path.join(work, "unpacked")
-    _unpack(docx_path, unpacked)
+    shutil.copy(src, out_path)
+    doc = Document(str(out_path))
+    paras = doc.paragraphs
 
-    doc_xml_path = os.path.join(unpacked, "word", "document.xml")
-    rels_path    = os.path.join(unpacked, "word", "_rels", "document.xml.rels")
-    media_dir    = os.path.join(unpacked, "word", "media")
-    os.makedirs(media_dir, exist_ok=True)
+    # Извлекаем только правую часть формул (убираем "X(s) = " префикс)
+    def _rhs(formula: str) -> str:
+        return formula.split(' = ', 1)[-1] if ' = ' in formula else formula
 
-    doc_xml = Path(doc_xml_path).read_text(encoding="utf-8")
-    rels_xml = Path(rels_path).read_text(encoding="utf-8")
+    phi_rhs  = _rhs(calc.Phi_str)    # "100 / (s**3 + ...)"
+    phie_rhs = _rhs(calc.PhiE_str)   # "(s**3 + ...) / (s**3 + ...)"
 
-    # 3. Добавляем изображения и rId
-    image_inserts: dict[str, tuple[str, str]] = {}  # name → (r_id, img_path)
-    pic_id = 100
-    r_id_counter = _max_rid(rels_xml) + 1
+    # 2. ── Текстовые замены ────────────────────────────────────────────────
+    phie_count = 0
 
-    img_tasks = [
-        ("schema",          shots.schema),
-        ("text_form",       shots.text_form),
-        ("characteristics", shots.characteristics),
-        ("root_locus",      shots.root_locus),
-        ("step_response",   shots.step_response),
-        ("bode",            shots.bode),
-        ("tf_panel",        shots.tf_panel),
-        ("critical",        shots.critical),
-    ]
+    for p in paras:
+        txt = p.text
 
-    for img_name, img_path in img_tasks:
-        if not img_path or not Path(img_path).exists():
-            continue
-        ext = Path(img_path).suffix.lower()
-        media_filename = f"auto_{img_name}{ext}"
-        shutil.copy(img_path, os.path.join(media_dir, media_filename))
-        r_id = f"rIdAuto{r_id_counter}"
-        r_id_counter += 1
-        rels_xml = rels_xml.replace(
-            "</Relationships>",
-            f'<Relationship Id="{r_id}" '
-            f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
-            f'Target="media/{media_filename}"/>\n</Relationships>'
-        )
-        image_inserts[img_name] = (r_id, img_path)
-        pic_id += 1
+        # Ф(s)= … — один параграф с числовым ответом (задача 5)
+        if txt.startswith('Ф(s)=') and ELLIPSIS in txt:
+            _replace_ellipsis(p, [phi_rhs])
 
-    # 4. Текстовые замены в document.xml
-    replacements = _build_text_replacements(calc)
-    for old, new in replacements.items():
-        doc_xml = doc_xml.replace(old, new)
+        # Фe(s)= … — первый (формула), второй (числовой ответ задачи 6)
+        elif txt.startswith('Фe(s)=') and ELLIPSIS in txt:
+            phie_count += 1
+            if phie_count == 1:
+                _replace_ellipsis(p, ['1 / (1 + WP(s))'])
+            elif phie_count == 2:
+                _replace_ellipsis(p, [phie_rhs])
 
-    # 5. Вставка скриншотов вместо плейсхолдеров вида [IMG:schema]
-    for img_name, (r_id, img_path) in image_inserts.items():
-        placeholder = f"[IMG:{img_name}]"
-        img_xml = _make_inline_img_xml(r_id, img_path, pic_id, img_name)
-        # Оборачиваем в параграф
-        para_xml = f'<w:p><w:pPr><w:jc w:val="center"/></w:pPr>{img_xml}</w:p>'
-        doc_xml = doc_xml.replace(
-            f'<w:t>{placeholder}</w:t>', img_xml
-        )
-        pic_id += 1
+        # eуст = lim … = … (задача 7, ступенчатое)
+        elif txt.startswith('eуст=lim') and ELLIPSIS in txt:
+            expr = 'Фe(0)'
+            _replace_ellipsis(p, [expr, calc.e_ust_step])
 
-    # 6. Записываем изменённые файлы
-    Path(doc_xml_path).write_text(doc_xml, encoding="utf-8")
-    Path(rels_path).write_text(rels_xml, encoding="utf-8")
+        # eуст = … (задача 8, рампа)
+        elif txt.startswith('eуст=') and ELLIPSIS in txt and 'lim' not in txt:
+            _replace_ellipsis(p, [calc.e_ust_ramp])
 
-    # 7. Упаковываем
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    output_path = os.path.join(output_dir, f"LP_v{variant_str}_report.docx")
-    _pack(unpacked, output_path)
+        # Kкр = …
+        elif txt.startswith('Kкр=') and ELLIPSIS in txt:
+            _replace_ellipsis(p, [str(round(calc.K_loop_critical, 4))])
 
-    # Очистка
-    shutil.rmtree(work, ignore_errors=True)
+    # 3. ── Таблицы коэффициентов ПФ ───────────────────────────────────────
+    # Находим тройки строк таблицы по шаблону (строка начинается с '|' и содержит …)
+    table_groups: list[list] = []
+    buf: list = []
+    for p in paras:
+        if p.text.startswith('|') and ELLIPSIS in p.text:
+            buf.append(p)
+            if len(buf) == 3:
+                table_groups.append(buf)
+                buf = []
+        else:
+            buf = []
 
-    print(f"[report] Отчёт сохранён: {output_path}")
-    return output_path
+    # Первая группа — Ф(s), вторая — Фe(s)
+    if len(table_groups) >= 1:
+        _fill_table_rows(table_groups[0], calc.Phi_classic)
+    if len(table_groups) >= 2:
+        _fill_table_rows(table_groups[1], calc.PhiE_classic)
 
+    # 4. ── Скриншоты ──────────────────────────────────────────────────────
+    # Находим параграфы с подписями к рисункам
+    ris3 = ris5 = ris6 = None
+    for p in paras:
+        t = p.text.strip()
+        if t == 'Рис. 3':
+            ris3 = p
+        elif 'Рис. 5' in t:
+            ris5 = p
+        elif t == 'Рис. 6':
+            ris6 = p
 
-def _max_rid(rels_xml: str) -> int:
-    """Находит максимальный числовой Id в .rels файле."""
-    ids = re.findall(r'Id="rId(\d+)"', rels_xml)
-    return max((int(x) for x in ids), default=10)
+    # Рис.3: пустой параграф перед подписью
+    if ris3:
+        idx = paras.index(ris3)
+        if idx > 0 and paras[idx - 1].text == '':
+            _insert_image_in_para(paras[idx - 1], shots.step_response)
 
+    # Рис.5: вставляем перед подписью
+    if ris5 and shots.critical:
+        _insert_image_before(doc, ris5, shots.critical)
 
-def _build_text_replacements(calc: CalcResults) -> dict:
-    """
-    Строит словарь замен плейсхолдер→значение для document.xml.
-    Плейсхолдеры — те что уже есть в шаблоне (…) или именованные [TASK4_WP] и т.д.
-    """
-    # Дробь для eуст
-    e_ramp = calc.e_ust_ramp
-    e_step = calc.e_ust_step
+    # Рис.6: вставляем перед подписью
+    if ris6 and shots.bode:
+        _insert_image_before(doc, ris6, shots.bode)
 
-    # Коэффициенты хар. полинома
-    c = calc.char_coeffs
-    char_str = " + ".join(
-        f"{v:.4g}·s^{i}" if i > 0 else f"{v:.4g}"
-        for i, v in enumerate(reversed(c))
-    )
-
-    return {
-        # Явные плейсхолдеры (если используются в шаблоне)
-        "[TASK4_WP]":     calc.WP_str,
-        "[TASK5_PHI]":    calc.Phi_str,
-        "[TASK6_PHIE]":   calc.PhiE_str,
-        "[CHAR_POLY]":    calc.char_poly_str,
-        "[HURWITZ]":      calc.hurwitz_detail,
-        "[K1CR]":         str(calc.K1_critical),
-        "[KCR]":          str(calc.K_loop_critical),
-        "[EUST_STEP]":    e_step,
-        "[EUST_RAMP]":    e_ramp,
-        "[STABLE]":       "устойчива" if calc.hurwitz_stable else "неустойчива",
-
-        # Варианты с кириллицей (на случай разных шаблонов)
-        "[ЗАД4_WP]":      calc.WP_str,
-        "[ЗАД5_Ф]":       calc.Phi_str,
-        "[ЗАД6_Фe]":      calc.PhiE_str,
-        "[К1кр]":         str(calc.K1_critical),
-        "[Ккр]":          str(calc.K_loop_critical),
-        "[eуст_step]":    e_step,
-        "[eуст_ramp]":    e_ramp,
-    }
+    doc.save(str(out_path))
+    print(f'[report] Готово: {out_path}')
+    return str(out_path)
