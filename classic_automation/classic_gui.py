@@ -283,30 +283,43 @@ class ClassicController:
 
     def _critical_shot(self) -> str:
         """
-        Двойной клик по блоку K1 → диалог «Параметры блока» → меняем числитель
-        → F9 → скриншот Характеристик → перезагружаем исходный .mdl.
+        Закрывает окно Характеристик → двойной клик по блоку K1 →
+        диалог «Параметры блока» → меняем числитель → переоткрываем
+        Характеристики → скриншот → восстанавливаем исходный .mdl.
 
-        ВНИМАНИЕ: координаты блока K1 (0.28, 0.50) приблизительны.
-        Уточни после первого запуска по реальному расположению блока на схеме.
+        Координаты блока K1: (0.26, 0.32) — откалиброваны по схеме
+        1375×994 на разрешении 3440×1440 @ 125% DPI.
         """
         print(f"[CLASSiC] K1кр = {self.K1_critical}...")
+
+        # 1. Закрываем окно Характеристик (MDI-дочернее) — Ctrl+F4
+        self._focus(_WIN_MAIN)
+        time.sleep(0.3)
+        pyautogui.hotkey('ctrl', 'f4')
+        time.sleep(0.8)
+
+        # 2. Двойной клик по блоку K1 (второй блок на схеме)
         self._focus(_WIN_MAIN)
         rect = _get_win_rect(_WIN_MAIN)
         if rect:
-            cx = rect['x'] + int(rect['w'] * 0.28)
-            cy = rect['y'] + int(rect['h'] * 0.50)
+            cx = rect['x'] + int(rect['w'] * 0.26)
+            cy = rect['y'] + int(rect['h'] * 0.32)
+            print(f"  [K1 клик] ({cx}, {cy})")
             pyautogui.doubleClick(cx, cy)
             time.sleep(config.DIALOG_TIMEOUT)
+
+            # 3. В диалоге «Параметры блока» меняем значение числителя
             pyautogui.hotkey('ctrl', 'a')
             pyautogui.write(str(round(self.K1_critical, 4)), interval=0.05)
             pyautogui.press('enter')
             time.sleep(0.5)
 
+        # 4. Открываем Характеристики и снимаем скриншот
         self._open_characteristics()
-        time.sleep(config.RENDER_TIMEOUT * 2)
+        self._wait_for_render()
         path = self._shot_win(_WIN_MAIN, "critical")
 
-        # Восстанавливаем исходную модель
+        # 5. Восстанавливаем исходную модель
         self._set_mru_file1(str(self._tmp_mdl))
         self._open_from_mru()
         return path
