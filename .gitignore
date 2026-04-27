@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Сгенерированные файлы (воспроизводимы)
+models/*.mdl
+reports/*/
+reports/*.png
+reports/*.docx
+
+# Рантайм CLASSiC
+classic/CLASSiC.ini
+
+# Дебаг-скриншоты
+dbg_*.png
+*.png.bak

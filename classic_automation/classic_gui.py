@@ -16,6 +16,8 @@ CLASSiC 3.2 — Win16-приложение под otvdm.exe, UI-дерева н�
 import re
 import time
 import subprocess
+import ctypes
+import ctypes.wintypes
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -125,6 +127,9 @@ class ClassicController:
         self._proc = subprocess.Popen([config.CLASSIC_EXE])
         _wait_for_window(_WIN_MAIN, timeout=config.CLASSIC_LAUNCH_TIMEOUT)
 
+        # Перемещаем окно на основной монитор сразу после появления
+        _move_to_primary(_WIN_MAIN)
+
         print("[CLASSiC] Ждём закрытия splash...")
         time.sleep(3)
         self._dismiss_any_dialog()
@@ -175,20 +180,15 @@ class ClassicController:
         try:
             raw = _INI_PATH.read_bytes()
             new_val = b'File1=' + mdl_path.encode('ascii')
-            # Используем lambda чтобы избежать интерпретации \U, \D и т.п.
-            # в пути как escape-последовательностей re.sub
+
+            # Удаляем ВСЕ существующие File1= строки (включая дубли),
+            # затем добавляем одну актуальную после [MRU]
+            cleaned = re.sub(rb'(?m)^File1=[^\r\n]*\r?\n?', b'', raw)
             new_raw = re.sub(
-                rb'(?m)^File1=[^\r\n]*',
-                lambda _: new_val,
-                raw,
+                rb'(\[MRU\]\r?\n)',
+                lambda m: m.group(0) + new_val + b'\r\n',
+                cleaned,
             )
-            if new_raw == raw:
-                # File1 не найден — добавляем сразу после [MRU]
-                new_raw = re.sub(
-                    rb'(\[MRU\]\r?\n)',
-                    lambda m: m.group(0) + new_val + b'\r\n',
-                    raw,
-                )
             _INI_PATH.write_bytes(new_raw)
             print(f"[INI] File1 -> {mdl_path}")
         except Exception as e:
@@ -473,3 +473,23 @@ def _wait_for_window(title_sub: str, timeout: int = 30):
             return
         time.sleep(0.5)
     raise TimeoutError(f"Окно '{title_sub}' не появилось за {timeout} сек.")
+
+
+def _move_to_primary(title_sub: str, x: int = 200, y: int = 150):
+    """
+    Перемещает окно CLASSiC на основной монитор в заданную позицию.
+    Использует SetWindowPos с физическими координатами (процесс DPI-aware через pyautogui).
+    """
+    import ctypes
+    wins = _find_windows(title_sub)
+    if not wins:
+        return
+    hwnd = wins[0]._hWnd
+    rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    w = rect.right - rect.left
+    h = rect.bottom - rect.top
+    # SWP_NOZORDER=0x0004, SWP_NOACTIVATE=0x0010
+    ctypes.windll.user32.SetWindowPos(hwnd, None, x, y, w, h, 0x0004 | 0x0010)
+    time.sleep(0.3)
+    print(f"[CLASSiC] Окно перемещено на основной монитор: ({x},{y}) {w}x{h}")
