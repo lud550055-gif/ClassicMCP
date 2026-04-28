@@ -1,4 +1,5 @@
 # report.py — заполняет задание LP_vXX.doc результатами и скриншотами
+import re
 import shutil
 from pathlib import Path
 
@@ -8,12 +9,16 @@ from docx.shared import Inches
 from calculator import CalcResults
 from classic_gui import Screenshots
 
-ELLIPSIS = '…'  # …
-_COL_W = 10          # ширина колонки таблицы (9 пробелов + символ)
-_DEG_W = 7           # ширина колонки степени (3 + digit + 3)
+ELLIPSIS = '…'  # U+2026
+_COL_W = 10          # ширина колонки таблицы ПФ (9 пробелов + символ)
+_BLK_ID_W  = 12      # ширина поля block-id в текстовой таблице блоков
+_BLK_VAL_W = 10      # ширина числовых полей в таблице блоков
+_BLK_CONN_W = 10     # ширина поля связей
+
+_BLK_ROW_RE = re.compile(r'^\|    #(\d)      \|')
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers для коэффициентных таблиц ПФ ─────────────────────────────────────
 
 def _convert_doc_to_docx(doc_path: str, out_path: str) -> str:
     """Конвертирует .doc → .docx через Word COM."""
@@ -39,7 +44,7 @@ def _replace_ellipsis(para, replacements: list[str]):
 
 
 def _fmt_cell(val: float) -> str:
-    """Значение для 10-символьной колонки таблицы (правое выравнивание)."""
+    """Значение для 10-символьной колонки таблицы ПФ (правое выравнивание)."""
     if val == 0.0:
         return ' ' * _COL_W
     return f'{val:.4g}'.rjust(_COL_W)
@@ -52,13 +57,9 @@ def _make_table_row(num: float, den: float, deg: int, first: bool = False) -> st
 
 
 def _rewrite_table_rows(rows: list, classic: dict):
-    """
-    Перезаписывает уже заполненные строки ASCII-таблицы (без «…»).
-    Используется для WP-таблицы с образцовыми значениями другого варианта.
-    """
+    """Перезаписывает строки WP-таблицы (без «…»)."""
     num = classic.get('num', [0.0])
     den = classic.get('den', [0.0])
-    max_deg = max(len(num), len(den)) - 1
 
     def get(lst, i):
         return lst[i] if i < len(lst) else 0.0
@@ -66,16 +67,14 @@ def _rewrite_table_rows(rows: list, classic: dict):
     for row_i, para in enumerate(rows):
         if not para.runs:
             continue
-        first = row_i == 0
-        new_text = _make_table_row(get(num, row_i), get(den, row_i), row_i, first)
+        new_text = _make_table_row(get(num, row_i), get(den, row_i), row_i, row_i == 0)
         para.runs[0].text = new_text
 
 
 def _fill_table_rows(paras: list, classic: dict):
     """
-    Заполняет строки ASCII-таблицы CLASSiC коэффициентами ПФ.
-    classic: {"num": [c0,c1,...], "den": [c0,c1,...]} от s^0.
-    Если степень > 2, вставляет дополнительные строки перед последней.
+    Заполняет строки ASCII-таблицы ПФ коэффициентами.
+    Вставляет дополнительные строки если степень > 2.
     """
     import copy
 
@@ -97,19 +96,16 @@ def _fill_table_rows(paras: list, classic: dict):
             text = text.replace(f'   {ELLIPSIS}   ', f'   {deg}   ', 1)
         run.text = text
 
-    # Строки 0 и 1 (фиксированные степени)
     if len(paras) > 0 and paras[0].runs:
         _write_row(paras[0].runs[0], 0)
     if len(paras) > 1 and paras[1].runs:
         _write_row(paras[1].runs[0], 1)
 
-    # Для степеней 2..max_deg-1 вставляем дополнительные строки перед шаблонной
     last_para = paras[2] if len(paras) > 2 else None
     if last_para:
         for deg in range(2, max_deg):
             new_elem = copy.deepcopy(last_para._element)
             last_para._element.addprevious(new_elem)
-            # Найдём <w:t> внутри скопированного элемента и перезапишем
             ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
             for wt in new_elem.findall(f'.//{{{ns}}}t'):
                 text = wt.text or ''
@@ -119,8 +115,6 @@ def _fill_table_rows(paras: list, classic: dict):
                 text = text.replace(' ' * 9 + ELLIPSIS, d_val, 1)
                 text = text.replace(f'   {ELLIPSIS}   ', f'   {deg}   ', 1)
                 wt.text = text
-
-        # Заполняем последнюю (шаблонную) строку — максимальная степень
         if last_para.runs:
             _write_row(last_para.runs[0], max_deg, is_last=True)
 
@@ -141,6 +135,132 @@ def _insert_image_before(doc, target_para, img_path: str, width_in: float = 5.5)
     tmp.alignment = 1  # CENTER
     tmp.add_run().add_picture(img_path, width=Inches(width_in))
     target_para._element.addprevious(tmp._element)
+
+
+# ── Helpers для текстовой таблицы блоков ─────────────────────────────────────
+
+def _fmt_blk_val(val: float) -> str:
+    """10-символьное число с правым выравниванием для таблицы блоков.
+    Ноль всегда отображается как '0' (CLASSiC показывает явный 0 в знаменателе интегратора).
+    """
+    return f'{val:.4g}'.rjust(_BLK_VAL_W)
+
+
+def _blk_data_row(block_n: int, num: float, den: float, deg: int, conn: str) -> str:
+    """Строка данных блока: |    #N      |  num  |  den  |  deg  | conn |"""
+    c1 = f'    #{block_n}      '[:_BLK_ID_W]  # 12 символов, safe для #1-#9
+    cc = f' {conn:<9}'                          # 10 символов: пробел + значение выравненное влево
+    return f'|{c1}|{_fmt_blk_val(num)} |{_fmt_blk_val(den)} |   {deg}   |{cc}|'
+
+
+def _blk_label_row(label: str) -> str:
+    """Строка метки блока: | Вход       |           |           |       |          |"""
+    c1 = f' {label:<{_BLK_ID_W - 1}}'  # 12 символов
+    return (f'|{c1}|{" " * _BLK_VAL_W} |{" " * _BLK_VAL_W} '
+            f'|       |          |')
+
+
+def _blk_cont_row(den: float, deg: int) -> str:
+    """Строка продолжения (deg > 0): |            |           |  den  |  deg  |          |"""
+    return (f'|{" " * _BLK_ID_W}|{" " * _BLK_VAL_W} '
+            f'|{_fmt_blk_val(den)} |   {deg}   |          |')
+
+
+def _fill_block_table(paras: list, calc: CalcResults):
+    """
+    Перезаписывает строки текстовой таблицы блоков CLASSiC значениями варианта.
+
+    Структура: block_params[N] = (num0, den0, deg0, conn, cont_den|None)
+      cont_den — коэффициент den для строки deg=1 (T3 или T4), None если нет.
+    """
+    K1, K3, T3 = calc.K1, calc.K3, calc.T3
+    K4, T4, K5 = calc.K4, calc.T4, calc.K5
+
+    block_params = {
+        1: (K1,  1.0, 0, '2',  None),
+        2: (K3,  1.0, 0, '3',  T3),
+        3: (K4,  1.0, 0, '4',  T4),
+        4: (K5,  0.0, 0, '-1', None),
+    }
+
+    def _set(p, text):
+        if p.runs:
+            p.runs[0].text = text
+            for r in p.runs[1:]:
+                r.text = ''
+
+    for i, p in enumerate(paras):
+        m = _BLK_ROW_RE.match(p.text)
+        if not m:
+            continue
+        bn = int(m.group(1))
+        if bn not in block_params:
+            continue
+        num, den, deg, conn, cont_den = block_params[bn]
+        _set(p, _blk_data_row(bn, num, den, deg, conn))
+        if cont_den is not None and i + 1 < len(paras):
+            nxt = paras[i + 1]
+            if nxt.text.startswith('|            |'):
+                _set(nxt, _blk_cont_row(cont_den, 1))
+
+
+# ── Вычисление частотных показателей качества ────────────────────────────────
+
+def _compute_freq_margins(calc: CalcResults) -> dict:
+    """
+    Вычисляет частоту среза, запас по фазе, частоту пи и запас по модулю
+    из WP(s) численно (без scipy.signal.margin, только numpy).
+
+    WP_classic хранит коэффициенты от s^0, scipy.poly1d ждёт от старшей степени.
+    """
+    try:
+        import numpy as np
+
+        wpc = calc.WP_classic
+        if not wpc or not wpc.get('num') or not wpc.get('den'):
+            return {}
+
+        # Переворачиваем: WP_classic[s^0, s^1, ...] → poly1d[s^N, ..., s^0]
+        num_poly = np.poly1d(list(reversed(wpc['num'])))
+        den_poly = np.poly1d(list(reversed(wpc['den'])))
+
+        # Частотная сетка: 10 000 точек от 1e-3 до 1e4 рад/с
+        w = np.logspace(-3, 4, 10_000)
+        H = num_poly(1j * w) / den_poly(1j * w)
+        mag_db = 20.0 * np.log10(np.abs(H))
+        # Разворачиваем фазу чтобы избежать разрывов при ±180°
+        phase = np.degrees(np.unwrap(np.angle(H)))
+
+        # ── Частота среза (wgc): mag пересекает 0 дБ снизу вверх (убывая) ──
+        crossings = np.where(np.diff(np.sign(mag_db)))[0]
+        wgc = pm = 0.0
+        if len(crossings):
+            idx = crossings[0]
+            wgc = float(np.interp(0.0, [mag_db[idx + 1], mag_db[idx]],
+                                       [w[idx + 1],       w[idx]]))
+            phase_at_gc = float(np.interp(wgc, w, phase))
+            pm = 180.0 + phase_at_gc
+
+        # ── Частота пи (wpc): phase пересекает -180° ──
+        shifted = phase + 180.0
+        pc_crossings = np.where(np.diff(np.sign(shifted)))[0]
+        wpc_freq = gm_db = 0.0
+        if len(pc_crossings):
+            idx = pc_crossings[0]
+            wpc_freq = float(np.interp(0.0, [shifted[idx + 1], shifted[idx]],
+                                            [w[idx + 1],         w[idx]]))
+            mag_at_pc = float(np.interp(wpc_freq, w, mag_db))
+            gm_db = -mag_at_pc  # запас по модулю: -L(ωπ) дБ
+
+        return {
+            'wgc':   wgc,
+            'pm':    pm,
+            'wpc':   wpc_freq,
+            'gm_db': gm_db,
+        }
+    except Exception as e:
+        print(f'[report] Предупреждение: частотные показатели не вычислены: {e}')
+        return {}
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -181,44 +301,52 @@ def fill_report(
     phi_rhs  = _rhs(calc.Phi_str)
     phie_rhs = _rhs(calc.PhiE_str)
 
+    # Предварительно вычисляем частотные показатели
+    margins = _compute_freq_margins(calc)
+
     # 2. ── WP-формула и WP-таблица ────────────────────────────────────────
-    # Строка вида "WP(s)= 0.1/(...)" — образец другого варианта; заменяем
     for p in paras:
         txt = p.text
         if txt.startswith('WP(s)=') and ELLIPSIS not in txt and len(txt) > 7:
-            # Находим run с '= ' и перезаписываем с этой позиции
             for i, run in enumerate(p.runs):
                 if '= ' in run.text or run.text == '=':
                     run.text = f'= {wp_rhs}'
                     for r2 in p.runs[i + 1:]:
                         r2.text = ''
                     break
-            break  # только первое совпадение
+            break
 
-    # Строки WP-таблицы: заканчиваются на |   N   | (колонка степени),
-    # без «…», до первой Phi-строки с «…»
-    import re as _re
     wp_rows: list = []
     for p in paras:
         if p.text.startswith('|') and ELLIPSIS in p.text:
-            break  # дошли до Phi-таблицы
-        if ELLIPSIS not in p.text and _re.search(r'\|   \d+   \|$', p.text):
+            break
+        if ELLIPSIS not in p.text and re.search(r'\|   \d+   \|$', p.text):
             wp_rows.append(p)
 
-    # Перезаписываем WP-строки значениями WP_classic
     _rewrite_table_rows(wp_rows, calc.WP_classic)
 
-    # 3. ── Текстовые замены ────────────────────────────────────────────────
+    # 3. ── Текстовые замены и поиск подписей к рисункам ──────────────────
     phie_count = 0
+    ris1a = ris3 = ris5 = ris6 = None
 
     for p in paras:
         txt = p.text
+        t   = txt.strip()
 
-        # Ф(s)= … — один параграф с числовым ответом (задача 5)
+        # ── Поиск подписей к рисункам ──
+        if 'Рис.1а' in t or 'Рис. 1а' in t:
+            ris1a = p
+        if t == 'Рис. 3':
+            ris3 = p
+        elif 'Рис. 5' in t:
+            ris5 = p
+        elif t == 'Рис. 6':
+            ris6 = p
+
+        # ── Замены ──
         if txt.startswith('Ф(s)=') and ELLIPSIS in txt:
             _replace_ellipsis(p, [phi_rhs])
 
-        # Фe(s)= … — первый (формула), второй (числовой ответ задачи 6)
         elif txt.startswith('Фe(s)=') and ELLIPSIS in txt:
             phie_count += 1
             if phie_count == 1:
@@ -226,21 +354,15 @@ def fill_report(
             elif phie_count == 2:
                 _replace_ellipsis(p, [phie_rhs])
 
-        # eуст = lim … = … (задача 7, ступенчатое)
         elif txt.startswith('eуст=lim') and ELLIPSIS in txt:
-            expr = 'Фe(0)'
-            _replace_ellipsis(p, [expr, calc.e_ust_step])
+            _replace_ellipsis(p, ['Фe(0)', calc.e_ust_step])
 
-        # eуст = … (задача 8, рампа)
         elif txt.startswith('eуст=') and ELLIPSIS in txt and 'lim' not in txt:
             _replace_ellipsis(p, [calc.e_ust_ramp])
 
-        # Kкр = …
         elif txt.startswith('Kкр=') and ELLIPSIS in txt:
             _replace_ellipsis(p, [str(round(calc.K_loop_critical, 4))])
 
-        # Имя MDL-файла: 'Модель сохранена в файле … .mdl.'
-        # run с «…» идёт перед run ' .mdl.' — убираем пробел после замены
         elif 'Модель сохранена в файле' in txt and ELLIPSIS in txt:
             for j, run in enumerate(p.runs):
                 if ELLIPSIS in run.text:
@@ -249,8 +371,35 @@ def fill_report(
                         p.runs[j + 1].text = p.runs[j + 1].text.lstrip()
                     break
 
-    # 3. ── Таблицы коэффициентов ПФ ───────────────────────────────────────
-    # Находим тройки строк таблицы по шаблону (строка начинается с '|' и содержит …)
+        # Имя модели в текстовой форме: 'Модель: "….MDL"'
+        elif txt.startswith('Модель: "') and ELLIPSIS in txt:
+            for run in p.runs:
+                if ELLIPSIS in run.text:
+                    run.text = run.text.replace(ELLIPSIS, f'VAR{variant_str}')
+                    break
+
+        # Частотные показатели качества (задача 13)
+        elif margins and txt.startswith('\tЧастота среза:') and p.runs:
+            p.runs[0].text = f'\tЧастота среза: {margins["wgc"]:.4f} рад/с'
+            for r in p.runs[1:]:
+                r.text = ''
+
+        elif margins and txt.startswith('\tЗапас по фазе:') and p.runs:
+            p.runs[0].text = f'\tЗапас по фазе: {margins["pm"]:.4f} град'
+            for r in p.runs[1:]:
+                r.text = ''
+
+        elif margins and txt.startswith('\tЧастота пи:') and p.runs:
+            p.runs[0].text = f'\tЧастота пи: {margins["wpc"]:.4f} рад/с'
+            for r in p.runs[1:]:
+                r.text = ''
+
+        elif margins and txt.startswith('\tЗапас по модулю:') and p.runs:
+            p.runs[0].text = f'\tЗапас по модулю: {margins["gm_db"]:.4f} дБ'
+            for r in p.runs[1:]:
+                r.text = ''
+
+    # 4. ── Таблицы коэффициентов ПФ ───────────────────────────────────────
     table_groups: list[list] = []
     buf: list = []
     for p in paras:
@@ -262,23 +411,19 @@ def fill_report(
         else:
             buf = []
 
-    # Первая группа — Ф(s), вторая — Фe(s)
     if len(table_groups) >= 1:
         _fill_table_rows(table_groups[0], calc.Phi_classic)
     if len(table_groups) >= 2:
         _fill_table_rows(table_groups[1], calc.PhiE_classic)
 
-    # 4. ── Тестовые вопросы (выделение правильного ответа жирным) ────────
-    # Q10: устойчивость по Гурвицу — варианты на отдельных строках
-    stability_answers = {
-        True:   '1:  система устойчива,',
-        False:  None,   # определяем ниже
-    }
-    # Если неустойчива — проверяем чем именно
+    # 5. ── Текстовая таблица блоков ───────────────────────────────────────
+    if calc.K1 != 0.0:
+        _fill_block_table(paras, calc)
+
+    # 6. ── Тестовые вопросы (Q10 — выделение правильного ответа) ─────────
     if not calc.hurwitz_stable:
         coeffs = calc.char_coeffs
         if all(c > 0 for c in coeffs):
-            # Все коэффициенты > 0, но определитель ≤ 0 → граница устойчивости
             q10_answer = '2:  система нейтральна (находится на нейтральной границе устойчивости),'
         else:
             q10_answer = '4:  система неустойчива.'
@@ -291,17 +436,10 @@ def fill_report(
                 run.bold = True
             break
 
-    # 5. ── Скриншоты ──────────────────────────────────────────────────────
-    # Находим параграфы с подписями к рисункам
-    ris3 = ris5 = ris6 = None
-    for p in paras:
-        t = p.text.strip()
-        if t == 'Рис. 3':
-            ris3 = p
-        elif 'Рис. 5' in t:
-            ris5 = p
-        elif t == 'Рис. 6':
-            ris6 = p
+    # 7. ── Скриншоты ──────────────────────────────────────────────────────
+    # Рис.1а: структурная схема (вставляем перед подписью)
+    if ris1a and shots.schema:
+        _insert_image_before(doc, ris1a, shots.schema)
 
     # Рис.3: пустой параграф перед подписью
     if ris3:

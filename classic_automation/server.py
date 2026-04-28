@@ -139,6 +139,8 @@ def calculate_transfer_functions(
         "WP_classic": r.WP_classic,
         "Phi_classic": r.Phi_classic,
         "PhiE_classic": r.PhiE_classic,
+        "K1": r.K1, "K3": r.K3, "T3": r.T3,
+        "K4": r.K4, "T4": r.T4, "K5": r.K5,
         "summary": format_results(r),
     }
 
@@ -263,6 +265,8 @@ def fill_report_docx(
         WP_classic=r.get("WP_classic", {}),
         Phi_classic=r.get("Phi_classic", {}),
         PhiE_classic=r.get("PhiE_classic", {}),
+        K1=r.get("K1", 0.0), K3=r.get("K3", 0.0), T3=r.get("T3", 0.0),
+        K4=r.get("K4", 0.0), T4=r.get("T4", 0.0), K5=r.get("K5", 0.0),
     )
 
     s = screenshots or {}

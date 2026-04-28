@@ -34,6 +34,14 @@ class CalcResults:
     Phi_classic: dict = field(default_factory=dict)
     PhiE_classic: dict = field(default_factory=dict)
 
+    # Параметры блоков (для заполнения текстовой таблицы блоков в отчёте)
+    K1: float = 0.0
+    K3: float = 0.0
+    T3: float = 0.0
+    K4: float = 0.0
+    T4: float = 0.0
+    K5: float = 0.0
+
 
 def calculate(params) -> CalcResults:
     """
@@ -149,6 +157,11 @@ def calculate(params) -> CalcResults:
     r.WP_classic  = poly_to_classic(WP_num, WP_den)
     r.Phi_classic = poly_to_classic(Phi_num, Phi_den)
     r.PhiE_classic = poly_to_classic(PhiE_num, PhiE_den)
+
+    r.K1 = float(params.K1)
+    r.K3 = float(params.K3); r.T3 = float(params.T3)
+    r.K4 = float(params.K4); r.T4 = float(params.T4)
+    r.K5 = float(params.K5)
 
     return r
 
