@@ -49,15 +49,20 @@ def _doc_to_text(doc_path: str) -> str:
             pass
 
     # Fallback: LibreOffice --convert-to txt
-    with tempfile.TemporaryDirectory() as tmp:
-        cmd = ["soffice", "--headless", "--convert-to", "txt:Text", str(path), "--outdir", tmp]
-        subprocess.run(cmd, capture_output=True, timeout=30)
-        txt_file = Path(tmp) / (path.stem + ".txt")
-        if txt_file.exists():
-            return txt_file.read_text(encoding="utf-8", errors="ignore")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = ["soffice", "--headless", "--convert-to", "txt:Text", str(path), "--outdir", tmp]
+            subprocess.run(cmd, capture_output=True, timeout=30)
+            txt_file = Path(tmp) / (path.stem + ".txt")
+            if txt_file.exists():
+                return txt_file.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        pass
 
-    # Последний fallback: читаем как текст (для .doc часть читабельна)
-    return path.read_text(encoding="utf-8", errors="ignore")
+    # Последний fallback: только .docx — бинарный .doc как текст даёт мусор
+    if suffix != ".doc":
+        return path.read_text(encoding="utf-8", errors="ignore")
+    return ""
 
 
 # ── таблица вариантов (пример для нескольких вариантов) ──────────────────────
