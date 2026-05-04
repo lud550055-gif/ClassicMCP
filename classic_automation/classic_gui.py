@@ -51,6 +51,7 @@ class Screenshots:
     characteristics: str = ""  # весь F9-экран целиком
     root_locus:      str = ""  # Корневая плоскость    (верх-лево)
     step_response:   str = ""  # Переходные процессы   (верх-право)
+    ramp_response:   str = ""  # Переходные процессы при Линейном входе 0.1t
     bode:            str = ""  # Частотные характеристики (низ-лево)
     tf_panel:        str = ""  # Передаточные функции  (низ-право)
     critical:        str = ""  # весь F9-экран при K1=K1кр
@@ -91,7 +92,10 @@ class ClassicController:
             shots.bode          = self._save_crop(crops.get('bl'), "bode")
             shots.tf_panel      = self._save_crop(crops.get('br'), "tf_panel")
 
-            # 4. K1кр — меняем параметр блока, снова F9
+            # 4. Рамповый вход f(t)=0.1t → рис.4
+            shots.ramp_response = self._ramp_shot(crops.get('tr'))
+
+            # 5. K1кр — меняем параметр блока, снова F9
             if self.K1_critical > 0:
                 shots.critical = self._critical_shot()
 
@@ -277,6 +281,58 @@ class ClassicController:
         self._focus(_WIN_MAIN)
         pyautogui.press('escape')
         time.sleep(0.3)
+        return path
+
+    # ── Рамповый вход (задача 8) ─────────────────────────────────────────────
+
+    def _ramp_shot(self, tr_bbox: Optional[tuple]) -> str:
+        """
+        Меняет тип входного воздействия «Переходных процессов» на Линейное (0.1),
+        снимает tr-квадрант → ramp_response, восстанавливает Ступенчатое (1.0).
+
+        Маршрут: правый клик по tr-панели → Down×2 (→ Тип) → Enter →
+          диалог «Переходные процессы: Тип»: Down (→ Линейное) → Tab → коэф → Enter.
+        """
+        if not tr_bbox:
+            return ""
+        print("[CLASSiC] Рамповый отклик (Линейное, 0.1)...")
+
+        cx = (tr_bbox[0] + tr_bbox[2]) // 2
+        cy = (tr_bbox[1] + tr_bbox[3]) // 2
+
+        def _open_type_dlg():
+            self._focus(_WIN_MAIN)
+            pyautogui.rightClick(cx, cy)
+            time.sleep(0.4)
+            pyautogui.press('down')   # → «Параметры» (1-й пункт)
+            time.sleep(0.1)
+            pyautogui.press('down')   # → «Тип»       (2-й пункт)
+            time.sleep(0.1)
+            pyautogui.press('enter')
+            time.sleep(0.5)
+
+        def _choose(arrow: str, coeff: str):
+            """Сдвигает radio на один шаг (arrow='down'/'up'), ставит коэф., OK."""
+            pyautogui.press(arrow)
+            time.sleep(0.1)
+            pyautogui.press('tab')        # → поле «Коэффициент»
+            time.sleep(0.2)
+            pyautogui.hotkey('ctrl', 'a')
+            pyautogui.write(coeff, interval=0.05)
+            pyautogui.press('enter')      # OK (default button)
+            time.sleep(0.3)
+
+        # Ступенчатое → Линейное
+        _open_type_dlg()
+        _choose('down', '0.1')
+        self._wait_for_render()
+        path = self._save_crop(tr_bbox, "ramp_response")
+
+        # Восстановить: Линейное → Ступенчатое
+        _open_type_dlg()
+        _choose('up', '1.0')
+        self._wait_for_render()
+
         return path
 
     # ── Симуляция при K1кр ───────────────────────────────────────────────────

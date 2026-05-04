@@ -327,7 +327,7 @@ def fill_report(
 
     # 3. ── Текстовые замены и поиск подписей к рисункам ──────────────────
     phie_count = 0
-    ris1a = ris3 = ris5 = ris6 = None
+    ris1a = ris3 = ris4 = ris5 = ris6 = None
 
     for p in paras:
         txt = p.text
@@ -338,6 +338,8 @@ def fill_report(
             ris1a = p
         if t == 'Рис. 3':
             ris3 = p
+        elif t == 'Рис. 4':
+            ris4 = p
         elif 'Рис. 5' in t:
             ris5 = p
         elif t == 'Рис. 6':
@@ -446,6 +448,10 @@ def fill_report(
         idx = paras.index(ris3)
         if idx > 0 and paras[idx - 1].text == '':
             _insert_image_in_para(paras[idx - 1], shots.step_response)
+
+    # Рис.4: рамповый вход f(t)=0.1t — вставляем перед подписью
+    if ris4 and shots.ramp_response:
+        _insert_image_before(doc, ris4, shots.ramp_response)
 
     # Рис.5: вставляем перед подписью
     if ris5 and shots.critical:
