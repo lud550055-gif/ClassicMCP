@@ -336,6 +336,7 @@ def fill_report(
     output_dir:    str,
     calc:          CalcResults,
     shots:         Screenshots,
+    q9_answer:     str = "",
 ) -> str:
     """
     Заполняет задание LP_vXX результатами расчётов и скриншотами.
@@ -444,6 +445,14 @@ def fill_report(
             for run in p.runs:
                 if ELLIPSIS in run.text:
                     run.text = run.text.replace(ELLIPSIS, f'VAR{variant_str}')
+                    break
+
+        # Q9: ответ на вопрос о характеристическом полиноме (или другом концепте)
+        # Параграф: 'В задачах № … , … , в выражениях … (указать, где представлен).'
+        elif q9_answer and txt.startswith('В задачах №') and ELLIPSIS in txt:
+            for run in p.runs:
+                if ELLIPSIS in run.text:
+                    run.text = f' {q9_answer}, '
                     break
 
         # Частотные показатели качества (задача 13)

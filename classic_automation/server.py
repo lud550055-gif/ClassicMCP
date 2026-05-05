@@ -55,7 +55,7 @@ def parse_task_file(doc_path: str) -> dict:
     doc_path: полный путь к файлу задания.
     Возвращает: variant, K1, K3, T3, K4, T4, K5.
     """
-    from parser import parse_variant
+    from parser import parse_variant, parse_q9_text
     params = parse_variant(doc_path)
     return {
         "variant": params.variant,
@@ -65,6 +65,7 @@ def parse_task_file(doc_path: str) -> dict:
         "K4": params.K4,
         "T4": params.T4,
         "K5": params.K5,
+        "q9_text": parse_q9_text(doc_path),
     }
 
 
@@ -234,6 +235,7 @@ def fill_report_docx(
     calc_results: dict,
     screenshots: dict = None,
     output_dir: str = "",
+    q9_answer: str = "",
 ) -> dict:
     """
     Заполняет шаблон .docx/.doc результатами расчётов и скриншотами.
@@ -242,6 +244,9 @@ def fill_report_docx(
     calc_results: словарь из calculate_transfer_functions.
     screenshots: словарь screenshots из run_classic_gui (или пустой/None).
     output_dir: папка для готового отчёта (по умолчанию REPORTS_DIR).
+    q9_answer: ответ на вопрос 9 — перечень номеров задач через запятую,
+               например "4, 5, 6, 10, 11". Claude определяет его из контекста
+               после прочтения q9_text из parse_task_file.
 
     Возвращает: report_path — путь к готовому .docx отчёту.
     """
@@ -288,6 +293,7 @@ def fill_report_docx(
         output_dir=output_dir or config.REPORTS_DIR,
         calc=calc,
         shots=shots,
+        q9_answer=q9_answer,
     )
     return {"report_path": report_path}
 

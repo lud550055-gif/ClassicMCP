@@ -143,6 +143,23 @@ def parse_variant(doc_path: str) -> VariantParams:
     )
 
 
+def parse_q9_text(doc_path: str) -> str:
+    """Возвращает текст вопроса 9 из .docx файла задания (без номера '9.')."""
+    path = Path(doc_path)
+    if path.suffix.lower() != '.docx':
+        return ""
+    try:
+        from docx import Document
+        doc = Document(str(path))
+        for p in doc.paragraphs:
+            t = p.text.strip()
+            if re.match(r'^9[\.\s]', t) and 'задач' in t.lower():
+                return re.sub(r'^9[\.\s]+', '', t).strip()
+    except Exception:
+        pass
+    return ""
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "LP_v17.doc"
