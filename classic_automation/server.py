@@ -21,9 +21,17 @@ mcp = FastMCP(
     "classic-automation",
     instructions=(
         "Автоматизация лабораторных по ТАУ (CLASSiC 3.2). "
-        "Типичный порядок вызовов: get_variant_params → calculate_transfer_functions "
-        "→ write_mdl_file → run_classic_gui → fill_report_docx. "
-        "Для полного пайплайна используй run_full_pipeline."
+        "Типичный порядок вызовов:\n"
+        "1. parse_task_file(doc_path) — парсит файл задания, возвращает параметры "
+        "   И q9_text (текст вопроса 9).\n"
+        "   Альтернатива без файла: get_variant_params(variant) — но q9_text не возвращает.\n"
+        "2. calculate_transfer_functions(...) — расчёты WP, Ф, Фe, Гурвиц, Ккр, eуст.\n"
+        "3. write_mdl_file(...) — генерирует .mdl модель для CLASSiC.\n"
+        "4. run_classic_gui(...) — запускает CLASSiC, делает скриншоты.\n"
+        "5. fill_report_docx(..., q9_answer=...) — заполняет .docx отчёт. "
+        "   Параметр q9_answer: прочитай q9_text из шага 1, рассуди какие из задач 1–8 "
+        "   содержат запрошенный концепт, передай перечень номеров (например '4, 5, 6, 10, 11').\n"
+        "Для полного пайплайна: run_full_pipeline(doc_path, q9_answer=...)."
     ),
 )
 
@@ -77,6 +85,8 @@ def get_variant_params(variant: int) -> dict:
     Возвращает параметры варианта напрямую из VARIANT_TABLE без чтения файла.
     variant: номер варианта (1–20).
     Возвращает: variant, K1, K3, T3, K4, T4, K5.
+    Примечание: q9_text недоступен без файла — используй parse_task_file если
+    нужно заполнить задачу 9 (q9_answer в fill_report_docx).
     """
     from parser import VARIANT_TABLE
     if variant not in VARIANT_TABLE:
@@ -334,12 +344,15 @@ def check_dependencies() -> dict:
 # ── 9. run_full_pipeline ──────────────────────────────────────────────────────
 
 @mcp.tool()
-def run_full_pipeline(doc_path: str) -> dict:
+def run_full_pipeline(doc_path: str, q9_answer: str = "") -> dict:
     """
     Запускает полный пайплайн обработки одного файла задания:
     парсинг → расчёты → MDL → CLASSiC (скриншоты) → отчёт .docx.
 
     doc_path: путь к файлу задания (.doc/.docx).
+    q9_answer: ответ на вопрос 9 — перечень номеров задач через запятую
+               (например "4, 5, 6, 10, 11"). Чтобы определить правильный ответ,
+               сначала вызови parse_task_file и прочитай поле q9_text.
     Возвращает пути ко всем артефактам и краткий итог расчётов.
     """
     from parser import parse_variant
@@ -371,6 +384,7 @@ def run_full_pipeline(doc_path: str) -> dict:
         output_dir=config.REPORTS_DIR,
         calc=calc,
         shots=shots,
+        q9_answer=q9_answer,
     )
 
     return {
