@@ -1,4 +1,5 @@
 # report.py — заполняет задание LP_vXX.doc результатами и скриншотами
+import copy
 import re
 import shutil
 from pathlib import Path
@@ -263,6 +264,85 @@ def _compute_freq_margins(calc: CalcResults) -> dict:
         return {}
 
 
+# ── XML run-splitter и болдинг по тексту ─────────────────────────────────────
+
+_WNS  = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+_XMNS = 'http://www.w3.org/XML/1998/namespace'
+
+
+def _split_at_offset(para, offset: int):
+    """Разрезает run, содержащий символ offset, на два. Ничего не делает если offset
+    совпадает с границей run-а или выходит за пределы параграфа."""
+    pos = 0
+    for run in para.runs:
+        rlen = len(run.text)
+        if pos < offset < pos + rlen:
+            split = offset - pos
+            before, after = run.text[:split], run.text[split:]
+            r_elem = run._element
+            after_elem = copy.deepcopy(r_elem)
+            for t in r_elem.findall(f'{{{_WNS}}}t'):
+                t.text = before
+                if before != before.strip():
+                    t.set(f'{{{_XMNS}}}space', 'preserve')
+            for t in after_elem.findall(f'{{{_WNS}}}t'):
+                t.text = after
+                if after != after.strip():
+                    t.set(f'{{{_XMNS}}}space', 'preserve')
+            r_elem.addnext(after_elem)
+            return
+        pos += rlen
+
+
+def _bold_text_in_para(para, target: str) -> bool:
+    """Находит строку target в параграфе и делает её жирной.
+    Разрезает runs на границах target при необходимости.
+    Возвращает True если target найден."""
+    full = para.text
+    start = full.find(target)
+    if start == -1:
+        return False
+    end = start + len(target)
+    # Разрезаем сначала у конца (чтобы не сдвинуть start), потом у начала
+    _split_at_offset(para, end)
+    _split_at_offset(para, start)
+    pos = 0
+    for run in para.runs:
+        rlen = len(run.text)
+        if pos >= start and pos + rlen <= end and rlen > 0:
+            run.bold = True
+        pos += rlen
+    return True
+
+
+def _bold_q1_answers(paras: list, calc: CalcResults):
+    """
+    Q1а (класс модели СУ): параграф с «линейные … непрерывные … дискретные».
+        Ответ всегда: «линейные» И «непрерывные» (система линейная, непрерывная).
+
+    Q1б (статич./астатизм): параграф с «статическая … астатизмом 1-го … 2-го».
+        Определяется по числу нулей s^0 в знаменателе WP (т.е. кратности полюса
+        в нуле): 0 → статическая, 1 → астатизм 1-го, 2 → астатизм 2-го порядка.
+    """
+    den = calc.WP_classic.get('den', [1.0])
+    n_int = sum(1 for c in den if abs(c) < 1e-12)
+
+    q1b_map = {
+        0: 'статическая',
+        1: 'астатизмом 1-го порядка',
+        2: 'астатизмом 2-го порядка',
+    }
+    q1b_target = q1b_map.get(n_int, 'астатизмом 1-го порядка')
+
+    for p in paras:
+        t = p.text
+        if 'линейные' in t and 'непрерывные' in t and 'дискретные' in t:
+            _bold_text_in_para(p, 'линейные')
+            _bold_text_in_para(p, 'непрерывные')
+        elif 'статическая' in t and 'астатизмом 1-го порядка' in t:
+            _bold_text_in_para(p, q1b_target)
+
+
 # ── Выделение тестовых ответов ────────────────────────────────────────────────
 
 def _bold_test_answers(paras: list):
@@ -514,6 +594,9 @@ def fill_report(
             for run in p.runs:
                 run.bold = True
             break
+
+    # Q1: класс модели и статизм/астатизм
+    _bold_q1_answers(paras, calc)
 
     # Q3, Q12, Q15: принцип управления, область устойчивости, Найквист
     _bold_test_answers(paras)
